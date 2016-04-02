@@ -45,18 +45,20 @@ do(State) ->
                 filelib:ensure_dir(filename:join(RegistryDir, "dummy")),
                 HexFile = filename:join(RegistryDir, "registry"),
                 ?INFO("Updating package registry...", []),
-                TmpDir = ec_file:insecure_mkdtemp(),
-                TmpFile = filename:join(TmpDir, "packages.gz"),
-
                 CDN = rebar_state:get(State, rebar_packages_cdn, ?DEFAULT_CDN),
                 case rebar_utils:url_append_path(CDN, ?REMOTE_REGISTRY_FILE) of
                     {ok, Url} ->
                         ?DEBUG("Fetching registry from ~p", [Url]),
                         case httpc:request(get, {Url, [{"User-Agent", rebar_utils:user_agent()}]},
-                                           [], [{stream, TmpFile}, {sync, true}],
+                                           [], [{body_format, binary}, {sync, true}],
                                            rebar) of
-                            {ok, saved_to_file} ->
-                                {ok, Data} = file:read_file(TmpFile),
+                            {ok, {_, Headers, Data}} ->
+                                Signature = get_signature(Url, Headers),
+                                io:format("Signature ~p~n", [Signature]),
+                                [RsaPublicKey] = public_key:pem_decode(pk()),
+                                io:format("Rsa ~p~n", [RsaPublicKey]),
+                                X = public_key:verify(Data, sha512, Signature, public_key:pem_entry_decode(RsaPublicKey)),
+                                io:format("X ~p~n", [X]),
                                 Unzipped = zlib:gunzip(Data),
                                 ok = file:write_file(HexFile, Unzipped),
                                 ?INFO("Writing registry to ~s", [HexFile]),
@@ -84,6 +86,51 @@ format_error(package_index_download) ->
     "Failed to download package index.";
 format_error(package_index_write) ->
     "Failed to write package index.".
+
+get_signature(Url, Headers) ->
+    S = case lists:keyfind("x-hex-signature", 1, Headers) of
+            {"x-hex-signature", Signature} ->
+                list_to_binary(Signature);
+            _ ->
+                case lists:keyfind("x-amz-meta-signature", 1, Headers) of
+                    {"x-amz-meta-signature", Signature} ->
+                        list_to_binary(Signature);
+                    _ ->
+                        fetch_signature(Url)
+                end
+        end,
+    decode(S).
+
+decode(Base16) when size(Base16) rem 2 =:= 0 ->
+    << <<(hexdigit(H) bsl 4 + hexdigit(L))>> || <<H,L>> <= Base16 >>.
+
+hexdigit(D) when $0 =< D andalso D =< $9 ->
+    D - $0;
+hexdigit(D) when $a =< D andalso D =< $f ->
+    10 + D - $a;
+hexdigit(D) when $A =< D andalso D =< $F ->
+    10 + D - $A.
+
+fetch_signature(Url) ->
+    case httpc:request(get, {Url++".signature", [{"User-Agent", rebar_utils:user_agent()}]},
+                       [], [{body_format, binary}, {sync, true}],
+                       rebar) of
+        {ok, {_, _, Signature}} ->
+            Signature;
+        _ ->
+            error
+    end.
+
+pk() ->
+    <<"-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApqREcFDt5vV21JVe2QNB
+Edvzk6w36aNFhVGWN5toNJRjRJ6m4hIuG4KaXtDWVLjnvct6MYMfqhC79HAGwyF+
+IqR6Q6a5bbFSsImgBJwz1oadoVKD6ZNetAuCIK84cjMrEFRkELtEIPNHblCzUkkM
+3rS9+DPlnfG8hBvGi6tvQIuZmXGCxF/73hU0/MyGhbmEjIKRtG6b0sJYKelRLTPW
+XgK7s5pESgiwf2YC/2MGDXjAJfpfCd0RpLdvd4eRiXtVlE9qO9bND94E7PgQ/xqZ
+J1i2xWFndWa6nfFnRxZmCStCOZWYYPlaxr+FZceFbpMwzTNs4g3d4tLNUcbKAIH4
+0wIDAQAB
+-----END PUBLIC KEY-----">>.
 
 is_supported(<<"make">>) -> true;
 is_supported(<<"rebar">>) -> true;
