@@ -20,19 +20,19 @@ init(State) ->
                                                                {bare, true},
                                                                {deps, ?DEPS},
                                                                {example, "rebar3 pkgs"},
-                                                               {short_desc, "List available packages."},
-                                                               {desc, info("List available packages")},
+                                                               {short_desc, "List versions of a package."},
+                                                               {desc, info("List versions of a package")},
                                                                {opts, []}])),
     {ok, State1}.
 
 -spec do(rebar_state:t()) -> {ok, rebar_state:t()} | {error, string()}.
 do(State) ->
-    rebar_packages:packages(State),
+    Config = hex_core:default_config(),    
     case rebar_state:command_args(State) of
-        [Name] ->
-            print_packages(get_packages(rebar_utils:to_binary(Name)));
+        [Name] ->            
+            print_packages(rebar_packages:get(Config, rebar_utils:to_binary(Name)));
         _ ->
-            print_packages(sort_packages())
+            ok        
     end,
     {ok, State}.
 
@@ -40,28 +40,12 @@ do(State) ->
 format_error(load_registry_fail) ->
     "Failed to load package regsitry. Try running 'rebar3 update' to fix".
 
-print_packages(Pkgs) ->
-    orddict:map(fun(Name, Vsns) ->
-                        SortedVsns = lists:sort(fun(A, B) ->
-                                                        ec_semver:lte(ec_semver:parse(A)
-                                                                     ,ec_semver:parse(B))
-                                                end, Vsns),
-                        VsnStr = join(SortedVsns, <<", ">>),
-                        ?CONSOLE("~ts:~n    Versions: ~ts~n", [Name, VsnStr])
-                end, Pkgs).
-
-sort_packages() ->
-    ets:foldl(fun({package_index_version, _}, Acc) ->
-                      Acc;
-                 ({Pkg, Vsns}, Acc) ->
-                      orddict:store(Pkg, Vsns, Acc);
-                 (_, Acc) ->
-                      Acc
-              end, orddict:new(), ?PACKAGE_TABLE).
-
-get_packages(Name) ->
-    ets:lookup(?PACKAGE_TABLE, Name).
-
+print_packages({ok, #{<<"name">> := Name, <<"releases">> := Releases}}) ->
+    Versions = [V || #{<<"version">> := V} <- Releases],
+    VsnStr = join(Versions, <<", ">>),
+    ?CONSOLE("~ts:~n    Versions: ~ts~n", [Name, VsnStr]);
+print_packages(_) ->
+    ok.
 
 -spec join([binary()], binary()) -> binary().
 join([Bin], _Sep) ->

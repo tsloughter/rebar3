@@ -29,10 +29,17 @@
 -define(LOCK_FILE, "rebar.lock").
 -define(DEFAULT_COMPILER_SOURCE_FORMAT, relative).
 
--define(PACKAGE_INDEX_VERSION, 3).
+-define(PACKAGE_INDEX_VERSION, 4).
 -define(PACKAGE_TABLE, package_index).
--define(INDEX_FILE, "packages.idx").
--define(REGISTRY_FILE, "registry").
+-define(INDEX_FILE, "packages-v2.idx").
+-define(REGISTRY_FILE, "registry-v2").
+
+-record(package, {name_version :: {unicode:unicode_binary(), unicode:unicode_binary()},
+                  checksum :: binary(),
+                  dependencies :: [#{package := unicode:unicode_binary(),
+                                     requirement := unicode:unicode_binary()}]}).
+-record(package_versions, {name :: unicode:unicode_binary(),
+                           versions :: [unicode:unicode_binary()]}).
 
 -ifdef(namespaced_types).
 -type rebar_dict() :: dict:dict().

@@ -10,7 +10,7 @@
         ,needs_update/2
         ,make_vsn/1]).
 
--export([request/2
+-export([request/4
         ,etag/1
         ,ssl_opts/1]).
 
@@ -85,20 +85,13 @@ download(TmpDir, Pkg, State) ->
       UpdateETag :: boolean(),
       Res :: download_result().
 download(TmpDir, Pkg={pkg, Name, Vsn, _Hash}, State, UpdateETag) ->
-    CDN = rebar_state:get(State, rebar_packages_cdn, ?DEFAULT_CDN),
     {ok, PackageDir} = rebar_packages:package_dir(State),
     Package = binary_to_list(<<Name/binary, "-", Vsn/binary, ".tar">>),
     ETagFile = binary_to_list(<<Name/binary, "-", Vsn/binary, ".etag">>),
     CachePath = filename:join(PackageDir, Package),
     ETagPath = filename:join(PackageDir, ETagFile),
-    case rebar_utils:url_append_path(CDN, filename:join(?REMOTE_PACKAGE_DIR,
-                                                        Package)) of
-        {ok, Url} ->
-            cached_download(TmpDir, CachePath, Pkg, Url, etag(ETagPath), State,
-                            ETagPath, UpdateETag);
-        _ ->
-            {fetch_fail, Name, Vsn}
-    end.
+    cached_download(TmpDir, CachePath, Pkg, etag(ETagPath), State,
+                    ETagPath, UpdateETag).
 
 %%------------------------------------------------------------------------------
 %% @doc
@@ -120,29 +113,44 @@ make_vsn(_) ->
 %% {ok, Contents, NewEtag}, otherwise if some error occured return error.
 %% @end
 %%------------------------------------------------------------------------------
--spec request(Url, ETag) -> Res when
-      Url :: string(),
-      ETag :: false | string(),
-      Res :: 'error' | {ok, cached} | {ok, any(), string()}.
-request(Url, ETag) ->
-    HttpOptions = [{ssl, ssl_opts(Url)},
-                   {relaxed, true} | rebar_utils:get_proxy_auth()],
-    case httpc:request(get, {Url, [{"if-none-match", "\"" ++ ETag ++ "\""}
-                                   || ETag =/= false] ++
-                             [{"User-Agent", rebar_utils:user_agent()}]},
-                       HttpOptions, [{body_format, binary}], rebar) of
-        {ok, {{_Version, 200, _Reason}, Headers, Body}} ->
-            ?DEBUG("Successfully downloaded ~ts", [Url]),
-            {"etag", ETag1} = lists:keyfind("etag", 1, Headers),
-            {ok, Body, rebar_string:trim(ETag1, both, [$"])};
-        {ok, {{_Version, 304, _Reason}, _Headers, _Body}} ->
-            ?DEBUG("Cached copy of ~ts still valid", [Url]),
+%% -spec request(Url, ETag) -> Res when
+%%       Url :: string(),
+%%       ETag :: false | string(),
+%%       Res :: 'error' | {ok, cached} | {ok, any(), string()}.
+%% request(Url, ETag) ->
+%%     HttpOptions = [{ssl, ssl_opts(Url)},
+%%                    {relaxed, true} | rebar_utils:get_proxy_auth()],
+%%     case httpc:request(get, {Url, [{"if-none-match", "\"" ++ ETag ++ "\""}
+%%                                    || ETag =/= false] ++
+%%                              [{"User-Agent", rebar_utils:user_agent()}]},
+%%                        HttpOptions, [{body_format, binary}], rebar) of
+%%         {ok, {{_Version, 200, _Reason}, Headers, Body}} ->
+%%             ?DEBUG("Successfully downloaded ~ts", [Url]),
+%%             {"etag", ETag1} = lists:keyfind("etag", 1, Headers),
+%%             {ok, Body, rebar_string:trim(ETag1, both, [$"])};
+%%         {ok, {{_Version, 304, _Reason}, _Headers, _Body}} ->
+%%             ?DEBUG("Cached copy of ~ts still valid", [Url]),
+%%             {ok, cached};
+%%         {ok, {{_Version, Code, _Reason}, _Headers, _Body}} ->
+%%             ?DEBUG("Request to ~p failed: status code ~p", [Url, Code]),
+%%             error;
+%%         {error, Reason} ->
+%%             ?DEBUG("Request to ~p failed: ~p", [Url, Reason]),
+%%             error
+%%     end.
+
+request(Config, Name, Version, ETag) ->    
+    Config1 = Config#{http_etag => ETag},
+    case hex_repo:get_tarball(Config1, Name, Version) of
+        {ok, {200, #{<<"etag">> := ETag1}, Tarball}} ->
+            {ok, Tarball, rebar_string:trim(ETag1, both, [$"])};
+        {ok, {304, _Headers, _}} ->
             {ok, cached};
-        {ok, {{_Version, Code, _Reason}, _Headers, _Body}} ->
-            ?DEBUG("Request to ~p failed: status code ~p", [Url, Code]),
+        {ok, {Code, _Headers, _Body}} ->
+            ?DEBUG("Request for package ~s-~s failed: status code ~p", [Name, Version, Code]),
             error;
         {error, Reason} ->
-            ?DEBUG("Request to ~p failed: ~p", [Url, Reason]),
+            ?DEBUG("Request for package ~s-~s failed: ~p", [Name, Version, Reason]),
             error
     end.
 
@@ -159,9 +167,9 @@ request(Url, ETag) ->
 etag(Path) ->
     case file:read_file(Path) of
         {ok, Bin} ->
-            binary_to_list(Bin);
+            Bin;
         {error, _} ->
-            false
+            <<>>
     end.
 
 %%------------------------------------------------------------------------------
@@ -196,20 +204,20 @@ store_etag_in_cache(Path, ETag) ->
 %%%=============================================================================
 %%% Private functions
 %%%=============================================================================
--spec cached_download(TmpDir, CachePath, Pkg, Url, ETag, State, ETagPath,
+-spec cached_download(TmpDir, CachePath, Pkg, ETag, State, ETagPath,
                       UpdateETag) -> Res when
       TmpDir :: file:name(),
       CachePath :: file:name(),
       Pkg :: {pkg, Name :: binary(), Vsn :: binary(), Hash :: binary()},
-      Url :: string(),
       ETag :: false | string(),
       State :: rebar_state:t(),
       ETagPath :: file:name(),
       UpdateETag :: boolean(),
       Res :: download_result().
-cached_download(TmpDir, CachePath, Pkg={pkg, Name, Vsn, _Hash}, Url, ETag,
+cached_download(TmpDir, CachePath, Pkg={pkg, Name, Vsn, _Hash}, ETag,
                 State, ETagPath, UpdateETag) ->
-    case request(Url, ETag) of
+    Config = hex_core:default_config(),    
+    case request(Config, Name, Vsn, ETag) of
         {ok, cached} ->
             ?INFO("Version cached at ~ts is up to date, reusing it", [CachePath]),
             serve_from_cache(TmpDir, CachePath, Pkg, State);
@@ -218,7 +226,7 @@ cached_download(TmpDir, CachePath, Pkg={pkg, Name, Vsn, _Hash}, Url, ETag,
             maybe_store_etag_in_cache(UpdateETag, ETagPath, NewETag),
             serve_from_download(TmpDir, CachePath, Pkg, NewETag, Body, State,
                                 ETagPath);
-        error when ETag =/= false ->
+        error when ETag =/= <<>> ->
             store_etag_in_cache(ETagPath, ETag),
             ?INFO("Download error, using cached file at ~ts", [CachePath]),
             serve_from_cache(TmpDir, CachePath, Pkg, State);
@@ -311,6 +319,7 @@ checksums(Pkg={pkg, _Name, _Vsn, Hash}, Files, Contents, Version, Meta, State) -
                       lists:flatten(io_lib:format("~64.16.0b", [X])))),
     RegistryChecksum = rebar_packages:registry_checksum(Pkg, State),
     {"CHECKSUM", TarChecksum} = lists:keyfind("CHECKSUM", 1, Files),
+    io:format("RegistryChecksum~n~p~n~p~n~p~n~p~n", [Hash, BinChecksum, RegistryChecksum, TarChecksum]),
     {Hash, BinChecksum, RegistryChecksum, TarChecksum}.
 
 %%------------------------------------------------------------------------------

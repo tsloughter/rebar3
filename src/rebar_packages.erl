@@ -1,6 +1,8 @@
 -module(rebar_packages).
 
--export([packages/1
+-export([get/2
+        ,packages/1
+        ,update_package/2
         ,close_packages/0
         ,load_and_verify_version/1
         ,deps/3
@@ -23,6 +25,15 @@
 -type vsn() :: binary().
 -type package() :: pkg_name() | {pkg_name(), vsn()}.
 
+-spec get(hex_core:config(), binary()) -> {ok, maps:map()} | {error, term()}.
+get(Config, Name) ->    
+    case hex_api_package:get(Config, Name) of
+        {ok, {200, _Headers, PkgInfo}} ->
+            {ok, PkgInfo};
+        _ ->
+            {error, blewup}
+    end.
+
 -spec packages(rebar_state:t()) -> ets:tid().
 packages(State) ->
     catch ets:delete(?PACKAGE_TABLE),
@@ -36,13 +47,13 @@ packages(State) ->
 
 handle_bad_index(State) ->
     ?ERROR("Bad packages index. Trying to fix by updating the registry.", []),
-    {ok, State1} = rebar_prv_update:do(State),
-    case load_and_verify_version(State1) of
+    %% {ok, State1} = rebar_prv_update:do(State),
+    case load_and_verify_version(State) of
         true ->
             ok;
         false ->
             %% Still unable to load after an update, create an empty registry
-            ets:new(?PACKAGE_TABLE, [named_table, public])
+            new_package_table()            
     end.
 
 close_packages() ->
@@ -52,40 +63,78 @@ load_and_verify_version(State) ->
     {ok, RegistryDir} = registry_dir(State),
     case ets:file2tab(filename:join(RegistryDir, ?INDEX_FILE)) of
         {ok, _} ->
-            case ets:lookup_element(?PACKAGE_TABLE, package_index_version, 2) of
+            case ets:lookup_element(?PACKAGE_TABLE, package_index_version, 1) of
                 ?PACKAGE_INDEX_VERSION ->
                     true;
                 _ ->
                     (catch ets:delete(?PACKAGE_TABLE)),
-                    rebar_prv_update:hex_to_index(State)
+                    new_package_table()                    
             end;
-        _ ->
-            rebar_prv_update:hex_to_index(State)
+        _ ->            
+            new_package_table()
     end.
+
+new_package_table() ->    
+    ets:new(?PACKAGE_TABLE, [named_table, public, {keypos, 2}]).
 
 deps(Name, Vsn, State) ->
     try
-        deps_(Name, Vsn, State)
+        deps_(Name, Vsn, State) 
     catch
-        _:_ ->
-            handle_missing_package({Name, Vsn}, State, fun(State1) -> deps_(Name, Vsn, State1) end)
+       _:_ ->
+            handle_missing_package({Name, Vsn}, State, fun(State1) -> deps_(Name, Vsn, State1) end)        
     end.
 
 deps_(Name, Vsn, State) ->
     ?MODULE:verify_table(State),
-    ets:lookup_element(?PACKAGE_TABLE, {rebar_utils:to_binary(Name), rebar_utils:to_binary(Vsn)}, 2).
+    ets:lookup_element(?PACKAGE_TABLE, {rebar_utils:to_binary(Name), 
+                                        rebar_utils:to_binary(Vsn)}, #package.dependencies).
+
+parse_deps(Deps) ->
+    [{Name, Constraint} || #{package := Name,
+                             requirement := Constraint} <- Deps].
+
+parse_checksum(<<X:256/big-unsigned>>) ->
+    list_to_binary(
+      rebar_string:uppercase(
+        lists:flatten(io_lib:format("~64.16.0b", [X])))).
+
+update_package(Name, State) ->
+    case hex_repo:get_package(hex_core:default_config(), Name) of
+        {ok, {200, _Headers, #{releases := Releases}}} ->
+            _Versions = [begin
+                            true = ets:insert(?PACKAGE_TABLE, 
+                                              #package{name_version={Name, Version},
+                                                       checksum=parse_checksum(Checksum),
+                                                       dependencies=parse_deps(Dependencies)}),
+                            Version
+                        end || #{checksum := Checksum,
+                                 version := Version,
+                                 dependencies := Dependencies} <- Releases],
+            {ok, RegistryDir} = rebar_packages:registry_dir(State),
+            PackageIndex = filename:join(RegistryDir, ?INDEX_FILE),
+            ok = ets:tab2file(?PACKAGE_TABLE, PackageIndex);
+        _ ->
+            fail
+    end.
 
 handle_missing_package(Dep, State, Fun) ->
-    case Dep of
-        {Name, Vsn} ->
-            ?INFO("Package ~ts-~ts not found. Fetching registry updates and trying again...", [Name, Vsn]);
-        _ ->
-            ?INFO("Package ~p not found. Fetching registry updates and trying again...", [Dep])
-    end,
+    Name = 
+        case Dep of
+            {N, Vsn} ->
+                ?INFO("Package ~ts-~ts not found. Fetching registry updates for "
+                      "package and trying again...", [N, Vsn]),
+                N;
+            _ ->
+                ?INFO("Package ~p not found. Fetching registry updates for "
+                      "package and trying again...", [Dep]),
+                Dep
+        end,
 
-    {ok, State1} = rebar_prv_update:do(State),
-    try
-        Fun(State1)
+    %% {ok, State1} = rebar_prv_update:do(State),
+    update_package(Name, State),
+    try 
+        Fun(State) 
     catch
         _:_ ->
             %% Even after an update the package is still missing, time to error out
@@ -131,7 +180,7 @@ package_dir(State) ->
 registry_checksum({pkg, Name, Vsn, _Hash}, State) ->
     try
         ?MODULE:verify_table(State),
-        ets:lookup_element(?PACKAGE_TABLE, {Name, Vsn}, 3)
+        ets:lookup_element(?PACKAGE_TABLE, {Name, Vsn}, #package.checksum) 
     catch
         _:_ ->
             throw(?PRV_ERROR({missing_package, rebar_utils:to_binary(Name), rebar_utils:to_binary(Vsn)}))
@@ -190,14 +239,13 @@ find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Table, State) ->
 
 find_all(Dep, Table, State) ->
     ?MODULE:verify_table(State),
-    try ets:lookup_element(Table, Dep, 2) of
-        [Vsns] when is_list(Vsns)->
-            {ok, Vsns};
+    case ets:select(Table, [{#package{name_version={Dep,'$1'},
+                                              _='_'}, 
+                                     [], ['$1']}]) of
+        [] ->
+            none;
         Vsns ->
             {ok, Vsns}
-    catch
-        error:badarg ->
-            none
     end.
 
 handle_vsns(Constraint, Vsns) ->
