@@ -26,7 +26,8 @@
 %% -------------------------------------------------------------------
 -module(rebar_utils).
 
--export([sort_deps/1,
+-export([parse_deps/1,
+         sort_deps/1,
          droplast/1,
          filtermap/2,
          is_arch/1,
@@ -81,6 +82,7 @@
 -export([otp_release/0]).
 
 -include("rebar.hrl").
+-include_lib("providers/include/providers.hrl").
 
 -define(ONE_LEVEL_INDENT, "     ").
 -define(APP_NAME_INDEX, 2).
@@ -88,6 +90,91 @@
 %% ====================================================================
 %% Public API
 %% ====================================================================
+
+parse_deps(D) ->
+    lists:map(fun parse_dep/1, D).
+
+parse_dep({Name, Vsn, {pkg, PkgName}}) ->
+    #{package => rebar_utils:to_binary(PkgName),
+      requirement => rebar_utils:to_binary(Vsn),
+      app => rebar_utils:to_binary(Name)};
+parse_dep({Name, {pkg, PkgName}}) ->
+    %% Package dependency with different package name from app name
+    #{package => rebar_utils:to_binary(PkgName),
+      requirement => undefined,
+      app => rebar_utils:to_binary(Name)};
+parse_dep({Name, Source}) when is_tuple(Source) ->
+    #{package => rebar_utils:to_binary(Name),
+      requirement => undefined,
+      source => Source,
+      app => rebar_utils:to_binary(Name)};
+parse_dep({Name, _Vsn, Source}) when is_tuple(Source) ->
+    #{package => rebar_utils:to_binary(Name),
+      requirement => undefined,
+      source => Source,
+      app => rebar_utils:to_binary(Name)};
+parse_dep({Name, Vsn}) ->
+    #{package => rebar_utils:to_binary(Name),
+      requirement => rebar_utils:to_binary(Vsn),
+      app => rebar_utils:to_binary(Name)};    
+parse_dep(Name) when is_atom(Name)
+                     ; is_list(Name)
+                     ; is_binary(Name) ->
+    #{package => rebar_utils:to_binary(Name),
+      requirement => undefined,
+      app => rebar_utils:to_binary(Name)};    
+parse_dep({Name, _Vsn, Source, Opts}) when is_tuple(Source),
+                                           is_list(Opts) ->
+    ?WARN("Dependency option list ~p in ~p is not supported and will be ignored", [Opts, Name]),
+    #{package => rebar_utils:to_binary(Name),
+      requirement => undefined,
+      source => Source,
+      app => rebar_utils:to_binary(Name)};
+parse_dep({Name, Source, Opts}) when is_tuple(Source),
+                                     is_list(Opts) ->
+    ?WARN("Dependency option list ~p in ~p is not supported and will be ignored", [Opts, Name]),
+    #{package => rebar_utils:to_binary(Name),
+      requirement => undefined,
+      source => Source,
+      app => rebar_utils:to_binary(Name)};
+parse_dep({Name, {pkg, PkgName, Vsn}, Level}) when is_integer(Level) ->
+    %% locked dep 
+    #{package => rebar_utils:to_binary(PkgName),
+      requirement => rebar_utils:to_binary(Vsn),
+      app => rebar_utils:to_binary(Name)};
+parse_dep({Name, {pkg, PkgName, Vsn, Hash}, Level}) when is_integer(Level) ->
+    #{package => rebar_utils:to_binary(PkgName),
+      requirement => rebar_utils:to_binary(Vsn),
+      checksum => Hash,
+      app => rebar_utils:to_binary(Name)};
+parse_dep(#{package := PkgName,
+            requirement := Vsn,
+            source := Source,
+            app := Name}) ->
+    #{package => rebar_utils:to_binary(PkgName),
+      requirement => rebar_utils:to_binary(Vsn),
+      source => Source,
+      app => rebar_utils:to_binary(Name)};
+parse_dep(#{package := PkgName,
+            requirement := Vsn,
+            app := Name}) ->
+    #{package => rebar_utils:to_binary(PkgName),
+      requirement => rebar_utils:to_binary(Vsn),
+      app => rebar_utils:to_binary(Name)};
+parse_dep(#{package := PkgName,
+            requirement := Vsn}) ->
+    #{package => rebar_utils:to_binary(PkgName),
+      requirement => rebar_utils:to_binary(Vsn),
+      app => rebar_utils:to_binary(PkgName)};
+parse_dep({Name, Source, Level}) when is_tuple(Source)
+                                      , is_integer(Level) ->
+    %% lock format for non-packages
+    #{package => rebar_utils:to_binary(Name),
+      requirement => undefined,
+      source => Source,
+      app => rebar_utils:to_binary(Name)};
+parse_dep(Dep) ->
+    throw(?PRV_ERROR({parse_dep, Dep})).
 
 sort_deps(Deps) ->
     %% We need a sort stable, based on the name. So that for multiple deps on
@@ -266,6 +353,8 @@ tup_dedup_([]) ->
     [];
 tup_dedup_([A]) ->
     [A];
+tup_dedup_([A=#{package := P1}, #{package := P2} | T]) when P1 =:= P2->
+    tup_dedup_([A | T]);
 tup_dedup_([A,B|T]) when element(1, A) =:= element(1, B) ->
     tup_dedup_([A | T]);
 tup_dedup_([A,B|T]) when element(1, A) =:= B ->
@@ -292,6 +381,7 @@ tup_dedup_([A|T]) ->
 %% These properties let us merge proplists fairly easily.
 tup_sort(List) ->
     lists:sort(fun(A, B) when is_tuple(A), is_tuple(B) -> element(1, A) =< element(1, B)
+               ;  (#{package := P1}, #{package := P2}) -> P1 =< P2
                ;  (A, B) when is_tuple(A) -> element(1, A) =< B
                ;  (A, B) when is_tuple(B) -> A =< element(1, B)
                ;  (A, B) -> A =< B
@@ -365,6 +455,11 @@ umerge(old, [New|News], Olds, Acc, Current) ->
       NextPriority :: new | old,
       Merged :: term(),
       Larger :: term().
+compare({Priority, A=#{package := KA}}, {Secondary, B=#{package := KB}}) ->    
+    if KA == KB -> {Secondary, A, B};
+       KA  < KB -> {Secondary, A, B};
+       KA  > KB -> {Priority, B, A}
+    end;
 compare({Priority, A}, {Secondary, B}) when is_tuple(A), is_tuple(B) ->
     KA = element(1,A),
     KB = element(1,B),

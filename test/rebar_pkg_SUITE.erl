@@ -4,9 +4,10 @@
 -compile(export_all).
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-include("rebar.hrl").
 
--define(bad_etag, "abcdef").
--define(good_etag, "22e1d7387c9085a462340088a2a8ba67").
+-define(bad_etag, <<"abcdef">>).
+-define(good_etag, <<"22e1d7387c9085a462340088a2a8ba67">>).
 -define(bad_checksum, <<"D576B442A68C7B92BACDE1EFE9C6E54D8D6C74BDB71D8175B9D3C6EC8C7B62A7">>).
 -define(good_checksum, <<"1C6CE379D191FBAB41B7905075E0BF87CBBE23C77CECE775C5A0B786B2244C35">>).
 -define(BADPKG_ETAG, <<"BADETAG">>).
@@ -32,10 +33,10 @@ init_per_testcase(pkgs_provider=Name, Config) ->
     CacheDir = filename:join([CacheRoot, "hex", "com", "test", "packages"]),
     filelib:ensure_dir(filename:join([CacheDir, "registry"])),
     ok = ets:tab2file(Tid, filename:join([CacheDir, "registry"])),
-    meck:new(rebar_packages, [passthrough]),
-    meck:expect(rebar_packages, registry_dir, fun(_) -> {ok, CacheDir} end),
-    meck:expect(rebar_packages, package_dir, fun(_) -> {ok, CacheDir} end),
-    rebar_prv_update:hex_to_index(rebar_state:new()),
+    %% meck:new(rebar_packages, [passthrough]),
+    %% meck:expect(rebar_packages, registry_dir, fun(_) -> {ok, CacheDir} end),
+    %% meck:expect(rebar_packages, package_dir, fun(_) -> {ok, CacheDir} end),
+    %% rebar_prv_update:hex_to_index(rebar_state:new()),
     Config;
 init_per_testcase(good_uncached=Name, Config0) ->
     Config = [{good_cache, false},
@@ -89,9 +90,9 @@ init_per_testcase(good_disconnect=Name, Config0) ->
               | Config0],
     Config = mock_config(Name, Config1),
     copy_to_cache(Pkg, Config),
-    meck:unload(httpc),
+    %% meck:unload(httpc),
     meck:new(httpc, [passthrough, unsticky]),
-    meck:expect(httpc, request, fun(_, _, _, _, _) -> {error, econnrefused} end),
+    meck:expect(httpc, request, fun(_, _, _, _) -> {error, econnrefused} end),
     Config;
 init_per_testcase(bad_disconnect=Name, Config0) ->
     Pkg = {<<"goodpkg">>, <<"1.0.0">>},
@@ -99,9 +100,12 @@ init_per_testcase(bad_disconnect=Name, Config0) ->
                {pkg, Pkg}
               | Config0],
     Config = mock_config(Name, Config1),
-    meck:unload(httpc),
-    meck:new(httpc, [passthrough, unsticky]),
-    meck:expect(httpc, request, fun(_, _, _, _, _) -> {error, econnrefused} end),
+    %% meck:unload(httpc),
+    %% meck:new(httpc, [passthrough, unsticky]),
+    %% meck:expect(httpc, request, fun(_, _, _, _) -> {error, econnrefused} end),
+    meck:expect(hex_repo, get_tarball, fun(_, _, _) ->
+                                               {error, econnrefused}
+                                       end),                
     Config;
 init_per_testcase(Name, Config0) ->
     Config = [{good_cache, false},
@@ -249,20 +253,49 @@ mock_config(Name, Config) ->
     CacheRoot = filename:join([Priv, "cache", atom_to_list(Name)]),
     TmpDir = filename:join([Priv, "tmp", atom_to_list(Name)]),
     Tid = ets:new(registry_table, [public]),
-    ets:insert_new(Tid, [
-        {<<"badindexchk">>,[[<<"1.0.0">>]]},
-        {<<"goodpkg">>,[[<<"1.0.0">>, <<"1.0.1">>, <<"1.1.1">>, <<"2.0.0">>]]},
-        {<<"badpkg">>,[[<<"1.0.0">>]]},
+    AllDeps = [        
         {{<<"badindexchk">>,<<"1.0.0">>}, [[], ?bad_checksum, [<<"rebar3">>]]},
         {{<<"goodpkg">>,<<"1.0.0">>}, [[], ?good_checksum, [<<"rebar3">>]]},
         {{<<"goodpkg">>,<<"1.0.1">>}, [[], ?good_checksum, [<<"rebar3">>]]},
         {{<<"goodpkg">>,<<"1.1.1">>}, [[], ?good_checksum, [<<"rebar3">>]]},
         {{<<"goodpkg">>,<<"2.0.0">>}, [[], ?good_checksum, [<<"rebar3">>]]},
         {{<<"badpkg">>,<<"1.0.0">>}, [[], ?good_checksum, [<<"rebar3">>]]}
-    ]),
+    ],
+    ets:insert_new(Tid, AllDeps),
     CacheDir = filename:join([CacheRoot, "hex", "com", "test", "packages"]),
     filelib:ensure_dir(filename:join([CacheDir, "registry"])),
     ok = ets:tab2file(Tid, filename:join([CacheDir, "registry"])),
+
+    catch ets:delete(package_index),
+    rebar_packages:new_package_table(),    
+    lists:foreach(fun({{N, Vsn}, [Deps, Checksum, _]}) ->
+                          case ets:member(package_index, {ec_cnv:to_binary(N), Vsn}) of
+                              false ->
+                                  ets:insert(package_index, #package{key = 
+                                                                         {ec_cnv:to_binary(N), Vsn}, 
+                                                                     dependencies = Deps, 
+                                                                     checksum = Checksum});
+                              true ->
+                                  ok
+                          end
+                  end, AllDeps),
+    
+
+    meck:new(hex_repo, [passthrough]),
+    meck:expect(hex_repo, get_package, 
+                fun(_Config, PkgName) ->
+                        case ets:match_object(Tid, {{PkgName,'_'}, '_'}) of
+                            Matches ->
+                                Releases = 
+                                    [#{checksum => Checksum,
+                                       version => Vsn,
+                                       dependencies => Deps} || 
+                                        {{_, Vsn}, [Deps, Checksum, _]} <- Matches],
+                                {ok, {200, #{}, #{releases => Releases}}}%% ;
+                            %% _ ->
+                            %%     {ok, {200, #{}, #{releases => []}}}
+                        end
+                end),
 
     %% The state returns us a fake registry
     meck:new(rebar_state, [passthrough]),
@@ -274,10 +307,8 @@ mock_config(Name, Config) ->
     meck:new(rebar_dir, [passthrough]),
     meck:expect(rebar_dir, global_cache_dir, fun(_) -> CacheRoot end),
 
-    meck:new(rebar_packages, [passthrough]),
     meck:expect(rebar_packages, registry_dir, fun(_) -> {ok, CacheDir} end),
     meck:expect(rebar_packages, package_dir, fun(_) -> {ok, CacheDir} end),
-    rebar_prv_update:hex_to_index(rebar_state:new()),
 
     meck:new(rebar_prv_update, [passthrough]),
     meck:expect(rebar_prv_update, do, fun(State) -> {ok, State} end),
@@ -285,16 +316,16 @@ mock_config(Name, Config) ->
     %% Cache fetches are mocked -- we assume the server and clients are
     %% correctly used.
     GoodCache = ?config(good_cache, Config),
-    {Pkg,Vsn} = ?config(pkg, Config),
+    {Pkg,Vsn} = ?config(pkg, Config), 
     PkgFile = <<Pkg/binary, "-", Vsn/binary, ".tar">>,
     {ok, PkgContents} = file:read_file(filename:join(?config(data_dir, Config), PkgFile)),
-    meck:new(httpc, [passthrough, unsticky]),
-    meck:expect(httpc, request,
-            fun(get, {_Url, _Opts}, _, _, _) when GoodCache ->
-                {ok, {{Vsn, 304, <<"Not Modified">>}, [{"etag", ?good_etag}], <<>>}};
-               (get, {_Url, _Opts}, _, _, _) ->
-                {ok, {{Vsn, 200, <<"OK">>}, [{"etag", ?good_etag}], PkgContents}}
-            end),
+
+    meck:expect(hex_repo, get_tarball, fun(_, _, _) when GoodCache ->
+                                               {ok, {304, #{<<"etag">> => ?good_etag}, <<>>}};
+                                          (_, _, _) ->
+                                               {ok, {200, #{<<"etag">> => ?good_etag}, PkgContents}}
+                                       end),   
+ 
     [{cache_root, CacheRoot},
      {cache_dir, CacheDir},
      {tmp_dir, TmpDir},

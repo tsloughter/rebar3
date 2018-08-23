@@ -106,13 +106,15 @@ new(ParentState, Config, Dir) ->
 
 new(ParentState, Config, Deps, Dir) ->
     Opts = ParentState#state_t.opts,
-    Plugins = proplists:get_value(plugins, Config, []),
-    ProjectPlugins = proplists:get_value(project_plugins, Config, []),
+    Plugins = rebar_utils:parse_deps(proplists:get_value(plugins, Config, [])),
+    ProjectPlugins = rebar_utils:parse_deps(proplists:get_value(project_plugins, Config, [])),
     Terms = Deps++[{{project_plugins, default}, ProjectPlugins}, {{plugins, default}, Plugins} | Config],
     true = rebar_config:verify_config_format(Terms),
     LocalOpts = dict:from_list(Terms),
 
-    NewOpts = rebar_opts:merge_opts(LocalOpts, Opts),
+    %% TODO: this is a hack
+    LocalOpts1 = dict:update(deps, fun(D) -> rebar_utils:parse_deps(D) end, [], LocalOpts),
+    NewOpts = rebar_opts:merge_opts(LocalOpts1, Opts),
 
     ParentState#state_t{dir=Dir
                        ,opts=NewOpts
@@ -121,11 +123,11 @@ new(ParentState, Config, Deps, Dir) ->
 deps_from_config(Dir, Config) ->
     case rebar_config:consult_lock_file(filename:join(Dir, ?LOCK_FILE)) of
         [] ->
-            [{{deps, default}, proplists:get_value(deps, Config, [])}];
+            [{{deps, default}, rebar_utils:parse_deps(proplists:get_value(deps, Config, []))}];
         D ->
             %% We want the top level deps only from the lock file.
             %% This ensures deterministic overrides for configs.
-            Deps = [X || X <- D, element(3, X) =:= 0],
+            Deps = rebar_utils:parse_deps([X || X <- D, element(3, X) =:= 0]),
             [{{locks, default}, D}, {{deps, default}, Deps}]
     end.
 
@@ -138,11 +140,23 @@ base_state() ->
     end,
     #state_t{resources=Resources}.
 
-base_opts(Config) ->
-    Deps = proplists:get_value(deps, Config, []),
-    Plugins = proplists:get_value(plugins, Config, []),
-    ProjectPlugins = proplists:get_value(project_plugins, Config, []),
-    Terms = [{{deps, default}, Deps}, {{plugins, default}, Plugins}, {{project_plugins, default}, ProjectPlugins} | Config],
+base_opts(Config) ->    
+    %% TODO: this is a hack
+    Terms = case proplists:get_value(deps, Config) of
+                undefined ->               
+                    Plugins = rebar_utils:parse_deps(proplists:get_value(plugins, Config, [])),
+                    ProjectPlugins = rebar_utils:parse_deps(proplists:get_value(project_plugins, Config, [])),    
+                    [{{deps, default}, []}, {{plugins, default}, Plugins}, 
+                     {{project_plugins, default}, ProjectPlugins}
+                     | Config];
+                Deps ->
+                    ParsedDeps = rebar_utils:parse_deps(Deps),
+                    Plugins = rebar_utils:parse_deps(proplists:get_value(plugins, Config, [])),
+                    ProjectPlugins = rebar_utils:parse_deps(proplists:get_value(project_plugins, Config, [])),    
+                    [{{deps, default}, ParsedDeps}, {{plugins, default}, Plugins}, 
+                     {{project_plugins, default}, ProjectPlugins}, {deps, ParsedDeps}
+                     | proplists:delete(deps, Config)]
+            end,
     true = rebar_config:verify_config_format(Terms),
     dict:from_list(Terms).
 
@@ -304,10 +318,12 @@ dir(State=#state_t{}, Dir) ->
     State#state_t{dir=filename:absname(Dir)}.
 
 deps_names(Deps) when is_list(Deps) ->
-    lists:map(fun(Dep) when is_tuple(Dep) ->
-                      rebar_utils:to_binary(element(1, Dep));
-                 (Dep) when is_atom(Dep) ->
-                      rebar_utils:to_binary(Dep)
+    lists:map(fun%% (Dep) when is_tuple(Dep) ->
+                 %%      rebar_utils:to_binary(element(1, Dep));
+                 %% (Dep) when is_atom(Dep) ->
+                 %%      rebar_utils:to_binary(Dep);
+                 (#{package := Package}) ->
+                      rebar_utils:to_binary(Package)
               end, Deps);
 deps_names(State) ->
     Deps = rebar_state:get(State, deps, []),

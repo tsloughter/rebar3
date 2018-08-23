@@ -3,6 +3,8 @@
 -export([mock/0, mock/1, unmock/0]).
 -define(MOD, rebar_pkg_resource).
 
+-include("rebar.hrl").
+
 %%%%%%%%%%%%%%%%%
 %%% Interface %%%
 %%%%%%%%%%%%%%%%%
@@ -116,8 +118,8 @@ mock_pkg_index(Opts) ->
 
     Dict = find_parts(Deps, Skip),
     meck:new(rebar_packages, [passthrough, no_link]),
-    meck:expect(rebar_packages, packages,
-                fun(_State) -> to_index(Deps, Dict) end),
+    %% meck:expect(rebar_packages, packages,
+    %%             fun(_State) -> to_index(Deps, Dict) end),
     meck:expect(rebar_packages, verify_table,
                 fun(_State) -> to_index(Deps, Dict), true end).
 
@@ -145,22 +147,32 @@ find_parts([{AppName, Deps}|Rest], Skip, Acc) ->
     end.
 
 to_index(AllDeps, Dict) ->
-    catch ets:delete(package_index),
-    ets:new(package_index, [named_table, public]),
+    catch ets:delete(?PACKAGE_TABLE),
+    rebar_packages:new_package_table(),
+
     dict:fold(
       fun(K, Deps, _) ->
-              DepsList = [{DKB, {pkg, DKB, DVB, undefined}}
+              DepsList = [#{package => DKB,
+                            app => DKB,
+                            requirement => DVB,
+                            source => {pkg, DKB, DVB, undefined}}
                           || {DK, DV} <- Deps,
                              DKB <- [ec_cnv:to_binary(DK)],
                              DVB <- [ec_cnv:to_binary(DV)]],
-              ets:insert(package_index, {K, DepsList, <<"checksum">>})
+              ct:pal("INSERT ~p ~p", [K, DepsList]),
+              ets:insert(?PACKAGE_TABLE, #package{key = K, 
+                                                 dependencies = rebar_utils:parse_deps(DepsList), 
+                                                 checksum = <<"checksum">>})
       end, ok, Dict),
-    ets:insert(package_index, {package_index_version, 3}),
+
     lists:foreach(fun({{Name, Vsn}, _}) ->
-                          case ets:lookup(package_index,  ec_cnv:to_binary(Name)) of
-                              [{_, Vsns}] ->
-                                  ets:insert(package_index, {ec_cnv:to_binary(Name), [ec_cnv:to_binary(Vsn) | Vsns]});
-                              _ ->
-                                  ets:insert(package_index, {ec_cnv:to_binary(Name), [ec_cnv:to_binary(Vsn)]})
+                          case ets:member(?PACKAGE_TABLE, {ec_cnv:to_binary(Name), Vsn}) of
+                              false ->
+                                  ets:insert(?PACKAGE_TABLE, #package{key = 
+                                                                         {ec_cnv:to_binary(Name), Vsn}, 
+                                                                     dependencies = [], 
+                                                                     checksum = <<"checksum">>});
+                              true ->
+                                  ok
                           end
                   end, AllDeps).

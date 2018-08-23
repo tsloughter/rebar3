@@ -129,7 +129,7 @@ merge_opts(Profile, NewOpts, OldOpts) ->
 
     case dict:find(deps, NewOpts) of
         {ok, Value2} ->
-            dict:store({deps, Profile}, Value2, Opts2);
+            dict:store({deps, Profile}, rebar_utils:parse_deps(Value2), Opts2);
         error ->
             Opts2
     end.
@@ -168,6 +168,7 @@ override_opt(Opts1, Opts2) ->
 %% Function for dict:merge/3 (in merge_opts/2) to merge options by priority.
 %%
 merge_opt(deps, _NewValue, OldValue) ->
+    %% TODO: is this right?
     OldValue;
 merge_opt({deps, _}, NewValue, _OldValue) ->
     NewValue;

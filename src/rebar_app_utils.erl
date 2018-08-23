@@ -140,12 +140,15 @@ parse_deps(Parent, DepsDir, Deps, State, Locks, Level) ->
       Locks :: [tuple()], % TODO: meta to [lock()]
       Level :: non_neg_integer().
 parse_dep(Dep, Parent, DepsDir, State, Locks, Level) ->
-    Name = case Dep of
-               Dep when is_tuple(Dep) ->
-                   element(1, Dep);
-               Dep ->
-                   Dep
-           end,
+    #{package := Name} = Dep,
+    %% Name = case Dep of
+    %%            Dep when is_tuple(Dep) ->
+    %%                element(1, Dep);
+    %%            #{package := Package} ->
+    %%                Package;
+    %%            Dep ->
+    %%                Dep
+    %%        end,
     case lists:keyfind(rebar_utils:to_binary(Name), 1, Locks) of
         false ->
             parse_dep(Parent, Dep, DepsDir, false, State);
@@ -198,6 +201,18 @@ parse_dep(Parent, {Name, {pkg, PkgName, Vsn}, Level}, DepsDir, IsLock, State) wh
     dep_to_app(Parent, DepsDir, Name, Vsn, {pkg, PkgName, Vsn, undefined}, IsLock, State);
 parse_dep(Parent, {Name, {pkg, PkgName, Vsn, Hash}, Level}, DepsDir, IsLock, State) when is_integer(Level) ->
     dep_to_app(Parent, DepsDir, Name, Vsn, {pkg, PkgName, Vsn, Hash}, IsLock, State);
+parse_dep(Parent, #{package := Name,
+                    %% requirement := Vsn,
+                    source := Source}, DepsDir, IsLock, State) ->
+    ct:pal("PARSE DEP ~p ~p", [Name, Source]),
+    dep_to_app(Parent, DepsDir, Name, [], Source, IsLock, State);
+parse_dep(Parent, #{package := PkgName,
+                    requirement := Vsn,
+                    app := Name}, DepsDir, IsLock, State) ->
+    dep_to_app(Parent, DepsDir, Name, Vsn, {pkg, PkgName, Vsn, undefined}, IsLock, State);
+parse_dep(Parent, #{package := PkgName,
+                    requirement := Vsn}, DepsDir, IsLock, State) ->
+    dep_to_app(Parent, DepsDir, PkgName, Vsn, {pkg, PkgName, Vsn, undefined}, IsLock, State);
 parse_dep(Parent, {Name, Source, Level}, DepsDir, IsLock, State) when is_tuple(Source)
                                                                     , is_integer(Level) ->
     dep_to_app(Parent, DepsDir, Name, [], Source, IsLock, State);
@@ -215,6 +230,7 @@ parse_dep(_, Dep, _, _, _) ->
       IsLock :: boolean(),
       State :: rebar_state:t().
 dep_to_app(Parent, DepsDir, Name, Vsn, Source, IsLock, State) ->
+    ct:pal("PARSE DEP 2 ~p ~p", [Name, Source]),
     CheckoutsDir = rebar_utils:to_list(rebar_dir:checkouts_dir(State, Name)),
     AppInfo = case rebar_app_info:discover(CheckoutsDir) of
                         {ok, App} ->
@@ -242,7 +258,7 @@ dep_to_app(Parent, DepsDir, Name, Vsn, Source, IsLock, State) ->
 %% @doc Takes a given application app_info record along with the project.
 %% If the app is a package, resolve and expand the package definition.
 -spec expand_deps_sources(rebar_app_info:t(), rebar_state:t()) ->
-    rebar_app_info:t().
+                                 rebar_app_info:t().
 expand_deps_sources(Dep, State) ->
     update_source(Dep, rebar_app_info:source(Dep), State).
 
@@ -251,9 +267,11 @@ expand_deps_sources(Dep, State) ->
 -spec update_source(rebar_app_info:t(), Source, rebar_state:t()) ->
     rebar_app_info:t() when
       Source :: tuple() | atom() | binary(). % TODO: meta to source()
-update_source(AppInfo, {pkg, PkgName, PkgVsn, Hash}, State) ->
+update_source(AppInfo, {pkg, PkgName, PkgVsn, Hash}, State) ->    
     {PkgName1, PkgVsn1} = case PkgVsn of
                               undefined ->
+                                  get_package(PkgName, "0", State);
+                              <<"undefined">> ->
                                   get_package(PkgName, "0", State);
                               <<"~>", Vsn/binary>> ->
                                   [Vsn1] = [X || X <- binary:split(Vsn, [<<" ">>], [global]), X =/= <<>>],
@@ -312,7 +330,7 @@ get_package(Dep, Vsn, State) ->
     case rebar_packages:find_highest_matching(Dep, Vsn, ?PACKAGE_TABLE, State) of
         {ok, HighestDepVsn} ->
             {Dep, HighestDepVsn};
-        none ->
+        none ->            
             throw(?PRV_ERROR({missing_package, rebar_utils:to_binary(Dep)}))
     end.
 

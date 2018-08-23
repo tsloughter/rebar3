@@ -277,7 +277,7 @@ serve_from_download(TmpDir, CachePath, Package, ETag, Binary, State, ETagPath) -
     case etag(ETagPath) of
         ETag ->
             serve_from_cache(TmpDir, CachePath, Package, State);
-        FileETag ->
+        FileETag ->            
             ?DEBUG("Downloaded file ~ts ETag ~ts doesn't match returned ETag ~ts",
                    [CachePath, ETag, FileETag]),
             {bad_download, CachePath}
@@ -319,7 +319,6 @@ checksums(Pkg={pkg, _Name, _Vsn, Hash}, Files, Contents, Version, Meta, State) -
                       lists:flatten(io_lib:format("~64.16.0b", [X])))),
     RegistryChecksum = rebar_packages:registry_checksum(Pkg, State),
     {"CHECKSUM", TarChecksum} = lists:keyfind("CHECKSUM", 1, Files),
-    io:format("RegistryChecksum~n~p~n~p~n~p~n~p~n", [Hash, BinChecksum, RegistryChecksum, TarChecksum]),
     {Hash, BinChecksum, RegistryChecksum, TarChecksum}.
 
 %%------------------------------------------------------------------------------

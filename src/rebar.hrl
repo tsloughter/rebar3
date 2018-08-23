@@ -30,11 +30,11 @@
 -define(DEFAULT_COMPILER_SOURCE_FORMAT, relative).
 
 -define(PACKAGE_INDEX_VERSION, 4).
--define(PACKAGE_TABLE, package_index).
+-define(PACKAGE_TABLE, package_index_v2).
 -define(INDEX_FILE, "packages-v2.idx").
 -define(REGISTRY_FILE, "registry-v2").
 
--record(package, {name_version :: {unicode:unicode_binary(), unicode:unicode_binary()},
+-record(package, {key :: {unicode:unicode_binary(), unicode:unicode_binary()},
                   checksum :: binary(),
                   dependencies :: [#{package := unicode:unicode_binary(),
                                      requirement := unicode:unicode_binary()}]}).

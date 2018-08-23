@@ -153,7 +153,7 @@ update_opts(AppInfo, Opts, Config) ->
     LockDeps = case resource_type(AppInfo) of
                    pkg ->
                        Deps = deps(AppInfo),
-                       [{{locks, default}, Deps}, {{deps, default}, Deps}];
+                       [{{locks, default}, rebar_utils:parse_deps(Deps)}, {{deps, default}, rebar_utils:parse_deps(Deps)}];
                    _ ->
                        deps_from_config(dir(AppInfo), Config)
                end,
@@ -173,12 +173,12 @@ update_opts(AppInfo, Opts, Config) ->
 deps_from_config(Dir, Config) ->
     case rebar_config:consult_lock_file(filename:join(Dir, ?LOCK_FILE)) of
         [] ->
-            [{{deps, default}, proplists:get_value(deps, Config, [])}];
+            [{{deps, default}, rebar_utils:parse_deps(proplists:get_value(deps, Config, []))}];
         D ->
             %% We want the top level deps only from the lock file.
             %% This ensures deterministic overrides for configs.
-            Deps = [X || X <- D, element(3, X) =:= 0],
-            [{{locks, default}, D}, {{deps, default}, Deps}]
+            Deps = rebar_utils:parse_deps([X || X <- D, element(3, X) =:= 0]),
+            [{{locks, default}, rebar_utils:parse_deps(D)}, {{deps, default}, Deps}]
     end.
 
 %% @doc discover a complete version of the app info with all fields set.

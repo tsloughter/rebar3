@@ -326,7 +326,7 @@ needed_files(G, ErlOpts, RebarOpts, Dir, OutDir, SourceFiles) ->
                          %% necessary for erlang:function_exported/3 to work as expected
                          %% called here for clarity as it's required by both opts_changed/2
                          %% and erl_compiler_opts_set/0
-                         _ = code:ensure_loaded(compile),
+                         _ = code:ensure_loaded(compile),                         
                          digraph:vertex(G, Source) > {Source, filelib:last_modified(Target)}
                               orelse opts_changed(AllOpts, TargetBase)
                               orelse erl_compiler_opts_set()
@@ -366,6 +366,7 @@ effects_code_generation(Option) ->
         warnings_as_errors -> false;
         binary -> false;
         verbose -> false;
+        {i,_} -> false;
         {cwd,_} -> false;
         {outdir, _} -> false;
         _ -> true

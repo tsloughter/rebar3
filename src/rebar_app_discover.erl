@@ -25,7 +25,7 @@ do(State, LibDirs) ->
     RebarOpts = rebar_state:opts(State),
     SrcDirs = rebar_dir:src_dirs(RebarOpts, ["src"]),
     Apps = find_apps(Dirs, SrcDirs, all),
-    ProjectDeps = rebar_state:deps_names(State),
+    ProjectDeps = rebar_state:deps_names(State),    
     DepsDir = rebar_dir:deps_dir(State),
     CurrentProfiles = rebar_state:current_profiles(State),
 
@@ -36,7 +36,9 @@ do(State, LibDirs) ->
     %% Handle top level deps
     State1 = lists:foldl(fun(Profile, StateAcc) ->
                                  ProfileDeps = rebar_state:get(StateAcc, {deps, Profile}, []),
-                                 ProfileDeps2 = rebar_utils:tup_dedup(ProfileDeps),
+                                 ct:pal("PD ~p", [ProfileDeps]),
+                                 ProfileDeps2 = rebar_utils:parse_deps(rebar_utils:tup_dedup(ProfileDeps)),
+                                 ct:pal("PD2 ~p", [ProfileDeps2]),
                                  StateAcc1 = rebar_state:set(StateAcc, {deps, Profile}, ProfileDeps2),
                                  ParsedDeps = parse_profile_deps(Profile
                                                                 ,TopLevelApp
@@ -56,7 +58,7 @@ do(State, LibDirs) ->
                                 {AppInfo1, StateAcc1} = merge_deps(AppInfo, StateAcc),
                                 OutDir = filename:join(DepsDir, Name),
                                 AppInfo2 = rebar_app_info:out_dir(AppInfo1, OutDir),
-                                ProjectDeps1 = lists:delete(Name, ProjectDeps),
+                                ProjectDeps1 = lists:delete(Name, ProjectDeps),                                
                                 rebar_state:project_apps(StateAcc1
                                                         ,rebar_app_info:deps(AppInfo2, ProjectDeps1));
                             false ->
@@ -95,7 +97,7 @@ format_error({missing_module, Module}) ->
 merge_deps(AppInfo, State) ->
     %% These steps make sure that hooks and artifacts are run in the context of
     %% the application they are defined at. If an umbrella structure is used and
-    %% they are deifned at the top level they will instead run in the context of
+    %% they are defined at the top level they will instead run in the context of
     %% the State and at the top level, not as part of an application.
     CurrentProfiles = rebar_state:current_profiles(State),
     Default = reset_hooks(rebar_state:default(State), CurrentProfiles),
@@ -132,7 +134,7 @@ handle_profile(Profile, Name, AppInfo, State) ->
 
     %% Only deps not also specified in the top level config need
     %% to be included in the parsed deps
-    NewDeps = ProfileDeps2 -- TopLevelProfileDeps,
+    NewDeps = rebar_utils:parse_deps(ProfileDeps2 -- TopLevelProfileDeps),
     ParsedDeps = parse_profile_deps(Profile, Name, NewDeps, rebar_app_info:opts(AppInfo), State1),
     State2 = rebar_state:set(State1, {deps, Profile}, ProfileDeps2),
     rebar_state:set(State2, {parsed_deps, Profile}, TopParsedDeps++ParsedDeps).

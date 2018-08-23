@@ -1,7 +1,8 @@
 -module(rebar_packages).
 
 -export([get/2
-        ,packages/1
+        ,new_package_table/0
+        %% ,packages/1
         ,update_package/2
         ,close_packages/0
         ,load_and_verify_version/1
@@ -34,27 +35,26 @@ get(Config, Name) ->
             {error, blewup}
     end.
 
--spec packages(rebar_state:t()) -> ets:tid().
-packages(State) ->
-    catch ets:delete(?PACKAGE_TABLE),
-    case load_and_verify_version(State) of
-        true ->
-            ok;
-        false ->
-            ?DEBUG("Error loading package index.", []),
-            handle_bad_index(State)
-    end.
+%% -spec packages(rebar_state:t()) -> ets:tid().
+%% packages(State) ->
+%%     catch ets:delete(?PACKAGE_TABLE),
+%%     case load_and_verify_version(State) of
+%%         true ->
+%%             ok;
+%%         false ->
+%%             ?DEBUG("Error loading package index.", []),
+%%             handle_bad_index(State)
+%%     end.
 
-handle_bad_index(State) ->
-    ?ERROR("Bad packages index. Trying to fix by updating the registry.", []),
-    %% {ok, State1} = rebar_prv_update:do(State),
-    case load_and_verify_version(State) of
-        true ->
-            ok;
-        false ->
-            %% Still unable to load after an update, create an empty registry
-            new_package_table()            
-    end.
+%% handle_bad_index(State) ->
+%%     ?ERROR("Bad packages index. Trying to fix by updating the registry.", []),
+%%     case load_and_verify_version(State) of
+%%         true ->
+%%             ok;
+%%         false ->
+%%             %% Still unable to load after an update, create an empty registry
+%%             new_package_table()            
+%%     end.
 
 close_packages() ->
     catch ets:delete(?PACKAGE_TABLE).
@@ -75,13 +75,15 @@ load_and_verify_version(State) ->
     end.
 
 new_package_table() ->    
-    ets:new(?PACKAGE_TABLE, [named_table, public, {keypos, 2}]).
+    ets:new(?PACKAGE_TABLE, [named_table, public, ordered_set, {keypos, 2}]),
+    ets:insert(package_index, {package_index_version, ?PACKAGE_INDEX_VERSION}).
 
 deps(Name, Vsn, State) ->
     try
         deps_(Name, Vsn, State) 
     catch
        _:_ ->
+            ct:pal("DEPS ~p ~p", [Name, Vsn]),
             handle_missing_package({Name, Vsn}, State, fun(State1) -> deps_(Name, Vsn, State1) end)        
     end.
 
@@ -90,23 +92,26 @@ deps_(Name, Vsn, State) ->
     ets:lookup_element(?PACKAGE_TABLE, {rebar_utils:to_binary(Name), 
                                         rebar_utils:to_binary(Vsn)}, #package.dependencies).
 
-parse_deps(Deps) ->
-    [{Name, Constraint} || #{package := Name,
-                             requirement := Constraint} <- Deps].
+%% parse_deps(Deps) ->
+%%     [{Name, Constraint} || #{package := Name,
+%%                              requirement := Constraint} <- Deps].
 
 parse_checksum(<<X:256/big-unsigned>>) ->
     list_to_binary(
       rebar_string:uppercase(
-        lists:flatten(io_lib:format("~64.16.0b", [X])))).
+        lists:flatten(io_lib:format("~64.16.0b", [X]))));
+parse_checksum(X) ->
+    X.
 
 update_package(Name, State) ->
+    ct:pal("UPDATE PACKAGE ~p", [Name]),
     case hex_repo:get_package(hex_core:default_config(), Name) of
         {ok, {200, _Headers, #{releases := Releases}}} ->
             _Versions = [begin
                             true = ets:insert(?PACKAGE_TABLE, 
-                                              #package{name_version={Name, Version},
+                                              #package{key={Name, Version},
                                                        checksum=parse_checksum(Checksum),
-                                                       dependencies=parse_deps(Dependencies)}),
+                                                       dependencies=Dependencies}),
                             Version
                         end || #{checksum := Checksum,
                                  version := Version,
@@ -131,7 +136,6 @@ handle_missing_package(Dep, State, Fun) ->
                 Dep
         end,
 
-    %% {ok, State1} = rebar_prv_update:do(State),
     update_package(Name, State),
     try 
         Fun(State) 
@@ -207,21 +211,25 @@ find_highest_matching(Dep, Constraint, Table, State) ->
 find_highest_matching(Pkg, PkgVsn, Dep, Constraint, Table, State) ->
     try find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Table, State) of
         none ->
+            ct:pal("FETCH HIGHEST 1 ~p ~p ~p ~p", [Pkg, PkgVsn, Dep, Constraint]),            
             handle_missing_package(Dep, State,
                                    fun(State1) ->
+                                           ct:pal("TABLE 1 ~p", [ets:tab2list(?PACKAGE_TABLE)]),
                                        find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Table, State1)
                                    end);
         Result ->
             Result
     catch
-        _:_ ->
+        X:Y ->
+            ct:pal("FETCH HIGHEST 2 ~p ~p ~p ~p ~p ~p", [Pkg, PkgVsn, Dep, Constraint, X, Y]),
             handle_missing_package(Dep, State,
                                    fun(State1) ->
+                                           ct:pal("TABLE 2 ~p", [ets:tab2list(?PACKAGE_TABLE)]),
                                        find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Table, State1)
                                    end)
     end.
 
-find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Table, State) ->
+find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Table, State) ->    
     try find_all(Dep, Table, State) of
         {ok, [Vsn]} ->
             handle_single_vsn(Pkg, PkgVsn, Dep, Vsn, Constraint);
@@ -239,9 +247,9 @@ find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Table, State) ->
 
 find_all(Dep, Table, State) ->
     ?MODULE:verify_table(State),
-    case ets:select(Table, [{#package{name_version={Dep,'$1'},
-                                              _='_'}, 
-                                     [], ['$1']}]) of
+    case ets:select(Table, [{#package{key={Dep,'$1'},
+                                      _='_'}, 
+                             [], ['$1']}]) of
         [] ->
             none;
         Vsns ->

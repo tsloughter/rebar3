@@ -11,9 +11,9 @@
 
 %% -export([hex_to_index/1]).
 
--ifdef(TEST).
-%% -export([cmp_/6, cmpl_/6, valid_vsn/1]).
--endif.
+%% -ifdef(TEST).
+-export([cmp_/6, cmpl_/6, valid_vsn/1]).
+%% -endif.
 
 -include("rebar.hrl").
 -include_lib("providers/include/providers.hrl").
@@ -43,14 +43,11 @@ do(State) ->
     PackageIndex = filename:join(RegistryDir, ?INDEX_FILE),
     case ets:file2tab(PackageIndex) of
         {ok, _} ->
-            Packages = ets:match_object(?PACKAGE_TABLE, #package_versions{_='_'}),
-            io:format("Packages ~p~n", [Packages]),
+            %% Packages = ets:match_object(?PACKAGE_TABLE, #package_versions{_='_'}),
             ok;
         {error, _} ->
             (catch ets:delete(?PACKAGE_TABLE)),
-            ets:new(?PACKAGE_TABLE, [named_table, public, {keypos, 2}]),
-
-            ets:insert(?PACKAGE_TABLE, {?PACKAGE_INDEX_VERSION, package_index_version}),
+            rebar_packages:new_package_table(),            
             ok = ets:tab2file(?PACKAGE_TABLE, PackageIndex)
     end,
     {ok, State}.
@@ -218,12 +215,12 @@ format_error({package_parse_cdn, Uri}) ->
 %% rm_ws(R) ->
 %%     R.
 
-%% valid_vsn(Vsn) ->
-%%     %% Regepx from https://github.com/sindresorhus/semver-regex/blob/master/index.js
-%%     SemVerRegExp = "v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*))?"
-%%         "(-[0-9a-z-]+(\\.[0-9a-z-]+)*)?(\\+[0-9a-z-]+(\\.[0-9a-z-]+)*)?",
-%%     SupportedVersions = "^(>=?|<=?|~>|==)?\\s*" ++ SemVerRegExp ++ "$",
-%%     re:run(Vsn, SupportedVersions, [unicode]) =/= nomatch.
+valid_vsn(Vsn) ->
+    %% Regepx from https://github.com/sindresorhus/semver-regex/blob/master/index.js
+    SemVerRegExp = "v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*))?"
+        "(-[0-9a-z-]+(\\.[0-9a-z-]+)*)?(\\+[0-9a-z-]+(\\.[0-9a-z-]+)*)?",
+    SupportedVersions = "^(>=?|<=?|~>|==)?\\s*" ++ SemVerRegExp ++ "$",
+    re:run(Vsn, SupportedVersions, [unicode]) =/= nomatch.
 
 %% highest_matching({Pkg, PkgVsn, Dep, App}, Vsn, HexRegistry, State, DepsListAcc) ->
 %%     case rebar_packages:find_highest_matching_(Pkg, PkgVsn, Dep, Vsn, HexRegistry, State) of
@@ -240,20 +237,20 @@ format_error({package_parse_cdn, Uri}) ->
 %%     cmp_(undefined, Vsn, Vsns, DepsListAcc, Dep1, CmpFun).
 
 
-%% cmp_(undefined, _MinVsn, [], DepsListAcc, {Pkg, PkgVsn, Dep, _App}, _CmpFun) ->
-%%     ?DEBUG("[~ts:~ts] Missing registry entry for package ~ts. Try to fix with `rebar3 update`",
-%%            [Pkg, PkgVsn, Dep]),
-%%     DepsListAcc;
-%% cmp_(HighestDepVsn, _MinVsn, [], DepsListAcc, {_Pkg, _PkgVsn, Dep, App}, _CmpFun) ->
-%%     [{App, {pkg, Dep, HighestDepVsn, undefined}} | DepsListAcc];
+cmp_(undefined, _MinVsn, [], DepsListAcc, {Pkg, PkgVsn, Dep, _App}, _CmpFun) ->
+    ?DEBUG("[~ts:~ts] Missing registry entry for package ~ts. Try to fix with `rebar3 update`",
+           [Pkg, PkgVsn, Dep]),
+    DepsListAcc;
+cmp_(HighestDepVsn, _MinVsn, [], DepsListAcc, {_Pkg, _PkgVsn, Dep, App}, _CmpFun) ->
+    [{App, {pkg, Dep, HighestDepVsn, undefined}} | DepsListAcc];
 
-%% cmp_(BestMatch, MinVsn, [Vsn | R], DepsListAcc, Dep, CmpFun) ->
-%%     case CmpFun(Vsn, MinVsn) of
-%%         true ->
-%%             cmp_(Vsn, Vsn, R, DepsListAcc, Dep, CmpFun);
-%%         false  ->
-%%             cmp_(BestMatch, MinVsn, R, DepsListAcc, Dep, CmpFun)
-%%     end.
+cmp_(BestMatch, MinVsn, [Vsn | R], DepsListAcc, Dep, CmpFun) ->
+    case CmpFun(Vsn, MinVsn) of
+        true ->
+            cmp_(Vsn, Vsn, R, DepsListAcc, Dep, CmpFun);
+        false  ->
+            cmp_(BestMatch, MinVsn, R, DepsListAcc, Dep, CmpFun)
+    end.
 
 %% %% We need to treat this differently since we want a version that is LOWER but
 %% %% the higest possible one.
@@ -261,31 +258,31 @@ format_error({package_parse_cdn, Uri}) ->
 %%     {ok, Vsns}  = rebar_packages:find_all(Dep, HexRegistry, State),
 %%     cmpl_(undefined, Vsn, Vsns, DepsListAcc, Dep1, CmpFun).
 
-%% cmpl_(undefined, _MaxVsn, [], DepsListAcc, {Pkg, PkgVsn, Dep, _App}, _CmpFun) ->
-%%     ?DEBUG("[~ts:~ts] Missing registry entry for package ~ts. Try to fix with `rebar3 update`",
-%%            [Pkg, PkgVsn, Dep]),
-%%     DepsListAcc;
+cmpl_(undefined, _MaxVsn, [], DepsListAcc, {Pkg, PkgVsn, Dep, _App}, _CmpFun) ->
+    ?DEBUG("[~ts:~ts] Missing registry entry for package ~ts. Try to fix with `rebar3 update`",
+           [Pkg, PkgVsn, Dep]),
+    DepsListAcc;
 
-%% cmpl_(HighestDepVsn, _MaxVsn, [], DepsListAcc, {_Pkg, _PkgVsn, Dep, App}, _CmpFun) ->
-%%     [{App, {pkg, Dep, HighestDepVsn, undefined}} | DepsListAcc];
+cmpl_(HighestDepVsn, _MaxVsn, [], DepsListAcc, {_Pkg, _PkgVsn, Dep, App}, _CmpFun) ->
+    [{App, {pkg, Dep, HighestDepVsn, undefined}} | DepsListAcc];
 
-%% cmpl_(undefined, MaxVsn, [Vsn | R], DepsListAcc, Dep, CmpFun) ->
-%%     case CmpFun(Vsn, MaxVsn) of
-%%         true ->
-%%             cmpl_(Vsn, MaxVsn, R, DepsListAcc, Dep, CmpFun);
-%%         false  ->
-%%             cmpl_(undefined, MaxVsn, R, DepsListAcc, Dep, CmpFun)
-%%     end;
+cmpl_(undefined, MaxVsn, [Vsn | R], DepsListAcc, Dep, CmpFun) ->
+    case CmpFun(Vsn, MaxVsn) of
+        true ->
+            cmpl_(Vsn, MaxVsn, R, DepsListAcc, Dep, CmpFun);
+        false  ->
+            cmpl_(undefined, MaxVsn, R, DepsListAcc, Dep, CmpFun)
+    end;
 
-%% cmpl_(BestMatch, MaxVsn, [Vsn | R], DepsListAcc, Dep, CmpFun) ->
-%%     case CmpFun(Vsn, MaxVsn) of
-%%         true ->
-%%             case ec_semver:gte(Vsn, BestMatch) of
-%%                 true ->
-%%                     cmpl_(Vsn, MaxVsn, R, DepsListAcc, Dep, CmpFun);
-%%                 false ->
-%%                     cmpl_(BestMatch, MaxVsn, R, DepsListAcc, Dep, CmpFun)
-%%             end;
-%%         false  ->
-%%             cmpl_(BestMatch, MaxVsn, R, DepsListAcc, Dep, CmpFun)
-%%     end.
+cmpl_(BestMatch, MaxVsn, [Vsn | R], DepsListAcc, Dep, CmpFun) ->
+    case CmpFun(Vsn, MaxVsn) of
+        true ->
+            case ec_semver:gte(Vsn, BestMatch) of
+                true ->
+                    cmpl_(Vsn, MaxVsn, R, DepsListAcc, Dep, CmpFun);
+                false ->
+                    cmpl_(BestMatch, MaxVsn, R, DepsListAcc, Dep, CmpFun)
+            end;
+        false  ->
+            cmpl_(BestMatch, MaxVsn, R, DepsListAcc, Dep, CmpFun)
+    end.
