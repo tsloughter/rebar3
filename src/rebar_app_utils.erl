@@ -252,29 +252,20 @@ expand_deps_sources(Dep, State) ->
     rebar_app_info:t() when
       Source :: rebar_resource:source().
 update_source(AppInfo, {pkg, PkgName, PkgVsn, Hash}, State) ->
-    {ok, PkgVsn1} = rebar_packages:resolve_version(PkgName, PkgVsn,
-                                                   ?PACKAGE_TABLE, State),
-    %% store the expected hash for the dependency
-    Hash1 = case Hash of
-                undefined -> % unknown, define the hash since we know the dep
-                    fetch_checksum(PkgName, PkgVsn1, State);
-                _ -> % keep as is
-                    Hash
-            end,
-    AppInfo1 = rebar_app_info:source(AppInfo, {pkg, PkgName, PkgVsn1, Hash1}),
-    Deps = rebar_packages:get_package_deps(PkgName
-                                          ,PkgVsn1
-                                          ,State),
+    Resources = rebar_state:resources(State),
+    ResourceState = #{base_config := BaseConfig} = rebar_resource:find_resource_state(pkg, Resources),
+    {ok, Package, RepoConfig}
+        = rebar_packages:resolve_version(PkgName, PkgVsn, Hash,
+                                         ResourceState, ?PACKAGE_TABLE, State),
+    #package{key = {_, PkgVsn1, _},
+             checksum = Hash1,
+             dependencies = Deps} = Package,
+    RepoConfig1 = maps:merge(BaseConfig, RepoConfig),
+    AppInfo1 = rebar_app_info:source(AppInfo, {pkg, PkgName, PkgVsn1, Hash1, RepoConfig1}),
     AppInfo2 = rebar_app_info:resource_type(rebar_app_info:deps(AppInfo1, Deps), pkg),
     rebar_app_info:original_vsn(AppInfo2, PkgVsn1);
 update_source(AppInfo, Source, _State) ->
     rebar_app_info:source(AppInfo, Source).
-
-%% @doc grab the checksum for a given package
--spec fetch_checksum(binary(), binary(), rebar_state:t())
-                    -> iodata() | no_return().
-fetch_checksum(PkgName, PkgVsn, State) ->
-    rebar_packages:registry_checksum(PkgName, PkgVsn, State).
 
 %% @doc convert a given exception's payload into an io description.
 -spec format_error(any()) -> iolist().

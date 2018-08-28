@@ -134,7 +134,10 @@ update_pkg_deps([{Name, _, _} | Rest], AppInfos, State) ->
         {ok, AppInfo} ->
             case element(1, rebar_app_info:source(AppInfo)) of
                 pkg ->
-                    rebar_packages:update_package(Name, State);
+                    Resources = rebar_state:resources(State),
+                    #{repos := RepoConfigs,
+                      base_config := BaseConfig} = rebar_resource:find_resource_state(pkg, Resources),
+                    [update_package(Name, maps:merge(RepoConfig, BaseConfig), State) || RepoConfig <- RepoConfigs];
                 _ ->
                     skip
             end;
@@ -143,6 +146,14 @@ update_pkg_deps([{Name, _, _} | Rest], AppInfos, State) ->
             skip
     end,
     update_pkg_deps(Rest, AppInfos, State).
+
+update_package(Name, RepoConfig, State) ->
+    case rebar_packages:update_package(Name, RepoConfig, State) of
+        fail ->
+            ?WARN("Failed to fetch updates for package ~ts from repo ~ts", [Name, maps:get(name, RepoConfig)]);
+        _ ->
+            ok
+    end.
 
 parse_names(Bin, Locks) ->
     case lists:usort(re:split(Bin, <<" *, *">>, [trim, unicode])) of

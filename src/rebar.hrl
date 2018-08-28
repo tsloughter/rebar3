@@ -36,7 +36,8 @@
 %% http://erlang.org/pipermail/erlang-questions/2009-February/041445.html
 -type ms_field() :: '$1' | '_'.
 
--record(package, {key :: {unicode:unicode_binary() | ms_field(), unicode:unicode_binary() | ms_field()},
+-record(package, {key :: {unicode:unicode_binary() | ms_field(), unicode:unicode_binary() | ms_field(),
+                          unicode:unicode_binary() | ms_field()},
                   checksum :: binary() | ms_field(),
                   dependencies :: [#{package := unicode:unicode_binary(),
                                      requirement := unicode:unicode_binary()}] | ms_field()}).

@@ -46,7 +46,7 @@ unmock() ->
 
 %% @doc creates values for a lock file.
 mock_lock(_) ->
-    meck:expect(?MOD, lock, fun(_AppDir, Source) -> Source end).
+    meck:expect(?MOD, lock, fun(_AppDir, {pkg, Name, Vsn, Hash, _RepoConfig}) -> {pkg, Name, Vsn, Hash} end).
 
 %% @doc The config passed to the `mock/2' function can specify which apps
 %% should be updated on a per-name basis: `{update, ["App1", "App3"]}'.
@@ -54,7 +54,7 @@ mock_update(Opts) ->
     ToUpdate = proplists:get_value(upgrade, Opts, []),
     meck:expect(
         ?MOD, needs_update,
-        fun(_Dir, {pkg, App, _Vsn, _Hash}) ->
+        fun(_Dir, {pkg, App, _Vsn, _Hash, _}) ->
             lists:member(binary_to_list(App), ToUpdate)
         end).
 
@@ -79,7 +79,7 @@ mock_download(Opts) ->
     Config = proplists:get_value(config, Opts, []),
     meck:expect(
         ?MOD, download,
-        fun (Dir, {pkg, AppBin, Vsn, _}, _) ->
+        fun (Dir, {pkg, AppBin, Vsn, _, _}, _) ->
             App = binary_to_list(AppBin),
             filelib:ensure_dir(Dir),
             AppDeps = proplists:get_value({App,Vsn}, Deps, []),
@@ -118,8 +118,8 @@ mock_pkg_index(Opts) ->
 
     Dict = find_parts(Deps, Skip),
     meck:new(rebar_packages, [passthrough, no_link]),
-    %% meck:expect(rebar_packages, packages,
-    %%             fun(_State) -> to_index(Deps, Dict) end),
+    meck:expect(rebar_packages, update_package,
+                fun(_, _, _State) -> ok end),
     meck:expect(rebar_packages, verify_table,
                 fun(_State) -> to_index(Deps, Dict), true end).
 
@@ -154,7 +154,7 @@ to_index(AllDeps, Dict) ->
     rebar_packages:new_package_table(),
 
     dict:fold(
-      fun(K, Deps, _) ->
+      fun({N, V}, Deps, _) ->
               DepsList = [#{package => DKB,
                             app => DKB,
                             requirement => DVB,
@@ -162,18 +162,18 @@ to_index(AllDeps, Dict) ->
                           || {DK, DV} <- Deps,
                              DKB <- [ec_cnv:to_binary(DK)],
                              DVB <- [ec_cnv:to_binary(DV)]],
-              ets:insert(?PACKAGE_TABLE, #package{key = K, 
-                                                 dependencies = parse_deps(DepsList), 
-                                                 checksum = <<"checksum">>})
+              ets:insert(?PACKAGE_TABLE, #package{key = {N, V, <<"hexpm">>},
+                                                  dependencies = parse_deps(DepsList),
+                                                  checksum = <<"checksum">>})
       end, ok, Dict),
 
     lists:foreach(fun({{Name, Vsn}, _}) ->
-                          case ets:member(?PACKAGE_TABLE, {ec_cnv:to_binary(Name), Vsn}) of
+                          case ets:member(?PACKAGE_TABLE, {ec_cnv:to_binary(Name), Vsn, <<"hexpm">>}) of
                               false ->
                                   ets:insert(?PACKAGE_TABLE, #package{key = 
-                                                                         {ec_cnv:to_binary(Name), Vsn}, 
-                                                                     dependencies = [], 
-                                                                     checksum = <<"checksum">>});
+                                                                          {ec_cnv:to_binary(Name), Vsn, <<"hexpm">>},
+                                                                      dependencies = [],
+                                                                      checksum = <<"checksum">>});
                               true ->
                                   ok
                           end

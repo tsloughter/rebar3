@@ -27,11 +27,13 @@ init(State) ->
 
 -spec do(rebar_state:t()) -> {ok, rebar_state:t()} | {error, string()}.
 do(State) ->
-    Resources = rebar_state:resources(State),
-    #{hex_config := HexConfig} = rebar_resource:find_resource_state(pkg, Resources),
     case rebar_state:command_args(State) of
-        [Name] ->            
-            print_packages(rebar_packages:get(HexConfig, rebar_utils:to_binary(Name)));
+        [Name] ->
+            Resources = rebar_state:resources(State),
+            #{repos := [RepoConfig],
+              base_config := BaseConfig} = rebar_resource:find_resource_state(pkg, Resources),
+            print_packages(rebar_packages:get(maps:merge(RepoConfig, BaseConfig),
+                                              rebar_utils:to_binary(Name)));
         _ ->
             ?ERROR("Must provide a package name.", [])
     end,

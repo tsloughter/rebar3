@@ -2,20 +2,20 @@
 
 -export([get/2
         ,get_all_names/1
-        ,get_package_versions/3
-        ,get_package_deps/3
+        ,get_package_versions/4
+        ,get_package_deps/4
         ,new_package_table/0
         ,load_and_verify_version/1        
         ,registry_dir/1
         ,package_dir/1
-        ,registry_checksum/3
-        ,find_highest_matching/6
-        ,find_highest_matching/4
-        ,find_highest_matching_/6        
+        ,registry_checksum/4
+        ,find_highest_matching/7
+        ,find_highest_matching/5
+        ,find_highest_matching_/7
         ,verify_table/1
         ,format_error/1
-        ,update_package/2
-        ,resolve_version/4]).
+        ,update_package/3
+        ,resolve_version/6]).
 
 -ifdef(TEST).
 -export([cmp_/4, cmpl_/4, valid_vsn/1]).
@@ -48,38 +48,57 @@ get(Config, Name) ->
 -spec get_all_names(rebar_state:t()) -> [binary()].
 get_all_names(State) ->    
     verify_table(State),
-    lists:usort(ets:select(?PACKAGE_TABLE, [{#package{key={'$1', '_'},
+    lists:usort(ets:select(?PACKAGE_TABLE, [{#package{key={'$1', '_', '_'},
                                                       _='_'}, 
                                              [], ['$1']}])).
 
--spec get_package_versions(binary(), ets:tid(), rebar_state:t()) -> [vsn()].
-get_package_versions(Dep, Table, State) ->
+-spec get_package_versions(unicode:unicode_binary(), unicode:unicode_binary(), ets:tid(), rebar_state:t())
+                          -> [vsn()].
+get_package_versions(Dep, Repo, Table, State) ->
     ?MODULE:verify_table(State),
-    ets:select(Table, [{#package{key={Dep,'$1'},
+    ets:select(Table, [{#package{key={Dep,'$1', Repo},
                                  _='_'}, 
                         [], ['$1']}]).
 
+-spec get_package(unicode:unicode_binary(), unicode:unicode_binary(),
+                  binary() | undefined, unicode:unicode_binary(), ets:tab(), rebar_state:t())
+                 -> {ok, #package{}} | none.
+get_package(Dep, Vsn, undefined, Repo, Table, State) ->
+    get_package(Dep, Vsn, '_', Repo, Table, State);
+get_package(Dep, Vsn, Hash, Repo, Table, State) ->
+    ?MODULE:verify_table(State),
+    case ets:match_object(Table, #package{key={Dep, Vsn, Repo},
+                                          checksum=Hash,
+                                          _='_'}) of
+        [Package] ->
+            {ok, Package};
+        _ ->
+            none
+    end.
+
 new_package_table() ->    
-    ets:new(?PACKAGE_TABLE, [named_table, public, ordered_set, {keypos, 2}]),
-    ets:insert(package_index, {?PACKAGE_INDEX_VERSION, package_index_version}).
+    ?PACKAGE_TABLE = ets:new(?PACKAGE_TABLE, [named_table, public, ordered_set, {keypos, 2}]),
+    ets:insert(?PACKAGE_TABLE, {?PACKAGE_INDEX_VERSION, package_index_version}).
 
--spec get_package_deps(binary(), vsn(), rebar_state:t()) -> [map()].
-get_package_deps(Name, Vsn, State) ->
-    try_lookup(?PACKAGE_TABLE, {Name, Vsn}, #package.dependencies, State).
+-spec get_package_deps(unicode:unicode_binary(), unicode:unicode_binary(), vsn(), rebar_state:t())
+                      -> [map()].
+get_package_deps(Name, Vsn, Repo, State) ->
+    try_lookup(?PACKAGE_TABLE, {Name, Vsn, Repo}, #package.dependencies, State).
 
--spec registry_checksum(binary(), vsn(), rebar_state:t()) -> binary().
-registry_checksum(Name, Vsn, State) ->
-    try_lookup(?PACKAGE_TABLE, {Name, Vsn}, #package.checksum, State).
+-spec registry_checksum(unicode:unicode_binary(), vsn(), unicode:unicode_binary(), rebar_state:t())
+                       -> binary().
+registry_checksum(Name, Vsn, Repo, State) ->
+    try_lookup(?PACKAGE_TABLE, {Name, Vsn, Repo}, #package.checksum, State).
 
-try_lookup(Table, Key, Element, State) ->
+try_lookup(Table, Key={_, _, Repo}, Element, State) ->
     ?MODULE:verify_table(State),
     try
         ets:lookup_element(Table, Key, Element)       
     catch
        _:_ ->
-            handle_missing_package(Key, State, fun(_) -> 
-                                                       ets:lookup_element(Table, Key, Element) 
-                                               end)
+            handle_missing_package(Key, Repo, State, fun(_) ->
+                                                             ets:lookup_element(Table, Key, Element)
+                                                     end)
     end.
 
 load_and_verify_version(State) ->
@@ -101,10 +120,10 @@ load_and_verify_version(State) ->
             new_package_table()
     end.
 
-handle_missing_package(PkgKey, State, Fun) ->
+handle_missing_package(PkgKey, Repo, State, Fun) ->
     Name = 
         case PkgKey of
-            {N, Vsn} ->
+            {N, Vsn, _Repo} ->
                 ?DEBUG("Package ~ts-~ts not found. Fetching registry updates for "
                        "package and trying again...", [N, Vsn]),
                 N;
@@ -114,7 +133,7 @@ handle_missing_package(PkgKey, State, Fun) ->
                 PkgKey
         end,
 
-    update_package(Name, State),
+    update_package(Name, Repo, State),
     try 
         Fun(State) 
     catch
@@ -174,28 +193,28 @@ package_dir(State) ->
 %% `~> 2.1.3-dev` | `>= 2.1.3-dev and < 2.2.0`
 %% `~> 2.0` | `>= 2.0.0 and < 3.0.0`
 %% `~> 2.1` | `>= 2.1.0 and < 3.0.0`
-find_highest_matching(Dep, Constraint, Table, State) ->
-    find_highest_matching(undefined, undefined, Dep, Constraint, Table, State).
+find_highest_matching(Dep, Constraint, Repo, Table, State) ->
+    find_highest_matching(undefined, undefined, Dep, Constraint, Repo, Table, State).
 
-find_highest_matching(Pkg, PkgVsn, Dep, Constraint, Table, State) ->
-    try find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Table, State) of
+find_highest_matching(Pkg, PkgVsn, Dep, Constraint, Repo, Table, State) ->
+    try find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Repo, Table, State) of
         none ->
-            handle_missing_package(Dep, State,
+            handle_missing_package(Dep, Repo, State,
                                    fun(State1) ->
-                                       find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Table, State1)
+                                       find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Repo, Table, State1)
                                    end);
         Result ->
             Result
     catch
         _:_ ->
-            handle_missing_package(Dep, State,
+            handle_missing_package(Dep, Repo, State,
                                    fun(State1) ->
-                                       find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Table, State1)
+                                       find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Repo, Table, State1)
                                    end)
     end.
 
-find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Table, State) ->    
-    try get_package_versions(Dep, Table, State) of
+find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, #{name := Repo}, Table, State) ->
+    try get_package_versions(Dep, Repo, Table, State) of
         [Vsn] ->
             handle_single_vsn(Pkg, PkgVsn, Dep, Vsn, Constraint);
         Vsns ->
@@ -229,10 +248,10 @@ handle_single_vsn(Pkg, PkgVsn, Dep, Vsn, Constraint) ->
             case {Pkg, PkgVsn} of
                 {undefined, undefined} ->
                     ?DEBUG("Only existing version of ~ts is ~ts which does not match constraint ~~> ~ts. "
-                          "Using anyway, but it is not guaranteed to work.", [Dep, Vsn, Constraint]);
+                           "Using anyway, but it is not guaranteed to work.", [Dep, Vsn, Constraint]);
                 _ ->
                     ?DEBUG("[~ts:~ts] Only existing version of ~ts is ~ts which does not match constraint ~~> ~ts. "
-                          "Using anyway, but it is not guaranteed to work.", [Pkg, PkgVsn, Dep, Vsn, Constraint])
+                           "Using anyway, but it is not guaranteed to work.", [Pkg, PkgVsn, Dep, Vsn, Constraint])
             end,
             {ok, Vsn}
     end.
@@ -252,12 +271,11 @@ parse_checksum(<<Checksum:256/big-unsigned>>) ->
 parse_checksum(Checksum) ->
     Checksum.
 
-update_package(Name, State) ->
-    Resources = rebar_state:resources(State),
-    #{hex_config := HexConfig} = rebar_resource:find_resource_state(pkg, Resources),
-    case hex_repo:get_package(HexConfig, Name) of
+update_package(Name, RepoConfig=#{name := Repo}, State) ->
+    ?MODULE:verify_table(State),
+    case hex_repo:get_package(RepoConfig, Name) of
         {ok, {200, _Headers, #{releases := Releases}}} ->
-            _ = insert_releases(Name, Releases, ?PACKAGE_TABLE),
+            _ = insert_releases(Name, Releases, Repo, ?PACKAGE_TABLE),
             {ok, RegistryDir} = rebar_packages:registry_dir(State),
             PackageIndex = filename:join(RegistryDir, ?INDEX_FILE),
             ok = ets:tab2file(?PACKAGE_TABLE, PackageIndex);
@@ -265,34 +283,75 @@ update_package(Name, State) ->
             fail
     end.
 
-insert_releases(Name, Releases, Table) ->
+insert_releases(Name, Releases, Repo, Table) ->
     [true = ets:insert(Table,
-                       #package{key={Name, Version},
+                       #package{key={Name, Version, Repo},
                                 checksum=parse_checksum(Checksum),
                                 dependencies=parse_deps(Dependencies)})
      || #{checksum := Checksum,
           version := Version,
           dependencies := Dependencies} <- Releases].
 
-resolve_version(Dep, undefined, HexRegistry, State) ->
-    find_highest_matching(Dep, "0", HexRegistry, State);
-resolve_version(Dep, DepVsn, HexRegistry, State) ->
-    case {valid_vsn(DepVsn), DepVsn} of
-        {false, Vsn} ->
-            {error, {invalid_vsn, Vsn}};
-        {_, <<"~>", Vsn/binary>>} ->
-            highest_matching(Dep, rm_ws(Vsn), HexRegistry, State);
-        {_, <<">=", Vsn/binary>>} ->
-            cmp(Dep, rm_ws(Vsn), HexRegistry, State, fun ec_semver:gte/2);
-        {_, <<">", Vsn/binary>>} ->
-            cmp(Dep, rm_ws(Vsn), HexRegistry, State, fun ec_semver:gt/2);
-        {_, <<"<=", Vsn/binary>>} ->
-            cmpl(Dep, rm_ws(Vsn), HexRegistry, State, fun ec_semver:lte/2);
-        {_, <<"<", Vsn/binary>>} ->
-            cmpl(Dep, rm_ws(Vsn), HexRegistry, State, fun ec_semver:lt/2);
-        {_, <<"==", Vsn/binary>>} ->
+-spec resolve_version(unicode:unicode_binary(), unicode:unicode_binary() | undefined,
+                      binary() | undefined,
+                      map(), ets:tab(), rebar_state:t())
+                     -> {error, {invalid_vsn, unicode:unicode_binary()}} |
+                        none |
+                        {ok, #package{}}.
+resolve_version(Dep, undefined, Hash, ResourceState, HexRegistry, State) ->
+    Fun = fun(Repo) ->
+              case highest_matching(Dep, "0", Repo, HexRegistry, State) of
+                  none ->
+                      not_found;
+                  {ok, Vsn} ->
+                      get_package(Dep, Vsn, Hash, Repo, HexRegistry, State)
+              end
+          end,
+    handle_missing_no_exception(Fun, Dep, ResourceState, State);
+resolve_version(Dep, DepVsn, Hash, ResourceState, HexRegistry, State) ->
+    case valid_vsn(DepVsn) of
+        false ->
+            {error, {invalid_vsn, DepVsn}};
+        _ ->
+            Fun = fun(Repo) ->
+                      case resolve_version_(Dep, DepVsn, Hash, Repo, HexRegistry, State) of
+                          none ->
+                              not_found;
+                          {ok, Vsn} ->
+                              get_package(Dep, Vsn, Hash, Repo, HexRegistry, State)
+                      end
+                  end,
+            handle_missing_no_exception(Fun, Dep, ResourceState, State)
+    end.
+
+handle_missing_no_exception(Fun, Dep, ResourceState, State) ->
+    #{repos := RepoConfigs,
+      base_config := BaseConfig} = ResourceState,
+    ec_lists:search(fun(Config=#{name := R}) ->
+                            case Fun(R) of
+                                not_found ->
+                                    ?MODULE:update_package(Dep, maps:merge(BaseConfig, Config), State),
+                                    Fun(R);
+                                Result ->
+                                    Result
+                            end
+                    end, RepoConfigs).
+
+resolve_version_(Dep, DepVsn, Hash, Repo, HexRegistry, State) ->
+    case DepVsn of
+        <<"~>", Vsn/binary>> ->
+            highest_matching(Dep, rm_ws(Vsn), Repo, HexRegistry, State);
+        <<">=", Vsn/binary>> ->
+            cmp(Dep, rm_ws(Vsn), Repo, HexRegistry, State, fun ec_semver:gte/2);
+        <<">", Vsn/binary>> ->
+            cmp(Dep, rm_ws(Vsn), Repo, HexRegistry, State, fun ec_semver:gt/2);
+        <<"<=", Vsn/binary>> ->
+            cmpl(Dep, rm_ws(Vsn), Repo, HexRegistry, State, fun ec_semver:lte/2);
+        <<"<", Vsn/binary>> ->
+            cmpl(Dep, rm_ws(Vsn), Repo, HexRegistry, State, fun ec_semver:lt/2);
+        <<"==", Vsn/binary>> ->
             {ok, Vsn};
-        {_, Vsn} ->
+        Vsn ->
             {ok, Vsn}
     end.
 
@@ -308,17 +367,16 @@ valid_vsn(Vsn) ->
     SupportedVersions = "^(>=?|<=?|~>|==)?\\s*" ++ SemVerRegExp ++ "$",
     re:run(Vsn, SupportedVersions, [unicode]) =/= nomatch.
 
-highest_matching(Dep, Vsn, HexRegistry, State) ->
-    case find_highest_matching_(undefined, undefined, Dep, Vsn, HexRegistry, State) of
-        {ok, HighestDepVsn} ->
-            {ok, HighestDepVsn};
-        none ->
-            {error, {invalid_vsn, Vsn}}
-    end.
+highest_matching(Dep, Vsn, Repo, HexRegistry, State) ->
+    find_highest_matching_(undefined, undefined, Dep, Vsn, #{name => Repo}, HexRegistry, State).
 
-cmp(Dep, Vsn, HexRegistry, State, CmpFun) ->
-    Vsns  = get_package_versions(Dep, HexRegistry, State),
-    cmp_(undefined, Vsn, Vsns, CmpFun).
+cmp(Dep, Vsn, Repo, HexRegistry, State, CmpFun) ->
+    case get_package_versions(Dep, Repo, HexRegistry, State) of
+        [] ->
+            none;
+        Vsns ->
+            cmp_(undefined, Vsn, Vsns, CmpFun)
+    end.
 
 cmp_(undefined, MinVsn, [], _CmpFun) ->
     MinVsn;
@@ -335,9 +393,13 @@ cmp_(BestMatch, MinVsn, [Vsn | R], CmpFun) ->
 
 %% We need to treat this differently since we want a version that is LOWER but
 %% the higest possible one.
-cmpl(Dep, Vsn, HexRegistry, State, CmpFun) ->
-    Vsns  = get_package_versions(Dep, HexRegistry, State),
-    cmpl_(undefined, Vsn, Vsns, CmpFun).
+cmpl(Dep, Vsn, Repo, HexRegistry, State, CmpFun) ->
+    case get_package_versions(Dep, Repo, HexRegistry, State) of
+        [] ->
+            none;
+        Vsns ->
+            cmpl_(undefined, Vsn, Vsns, CmpFun)
+    end.
 
 cmpl_(undefined, MaxVsn, [], _CmpFun) ->
     MaxVsn;
